@@ -8,25 +8,35 @@ pub struct WindowSettings {
     pub gl_version: (u8, u8),
 }
 
-pub struct ProcLoader<'a> {
+pub struct WindowController<'a> {
+    exit: bool,
     windowed_context: &'a glutin::WindowedContext<glutin::PossiblyCurrent>,
 }
 
-impl ProcLoader<'_> {
+impl WindowController<'_> {
     pub fn get_proc_address(&self, s: &str) -> *const std::ffi::c_void {
         self.windowed_context.get_proc_address(s) as *const _
     }
+
+    pub fn set_title(&self, title: &str) {
+        self.windowed_context.window().set_title(title);
+    }
+
+    pub fn close(&mut self) {
+        self.exit = true;
+    }
 }
 
-pub enum Event<'a> {
-    WindowInitialized(ProcLoader<'a>),
+pub enum Event {
+    WindowInitialized,
+    CloseRequested,
     Resized((u32, u32)),
     RedrawRequested,
 }
 
-pub fn run<F>(window_settings: WindowSettings, event_handler: F)
+pub fn run<F>(window_settings: WindowSettings, event_handler: F) -> !
 where
-    F: 'static + FnMut(Event),
+    F: 'static + FnMut(&mut WindowController, Event),
 {
     let mut event_handler = event_handler;
 
@@ -47,12 +57,27 @@ where
     let windowed_context = windowed_context.build_windowed(wb, &el).unwrap();
     let windowed_context = unsafe { windowed_context.make_current().unwrap() };
 
-    event_handler(Event::WindowInitialized(ProcLoader {
-        windowed_context: &windowed_context,
-    }));
+    let exit = {
+        let mut wc = WindowController {
+            exit: false,
+            windowed_context: &windowed_context,
+        };
+
+        event_handler(&mut wc, Event::WindowInitialized);
+
+        wc.exit
+    };
+
+    if exit {
+        std::process::exit(0);
+    }
 
     el.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        let mut wc = WindowController {
+            exit: false,
+            windowed_context: &windowed_context,
+        };
 
         use glutin::event::Event as Ev;
         use glutin::event::WindowEvent as WinEv;
@@ -62,17 +87,21 @@ where
             Ev::WindowEvent { event, .. } => match event {
                 WinEv::Resized(physical_size) => {
                     windowed_context.resize(physical_size);
-                    event_handler(Event::Resized(physical_size.into()));
+                    event_handler(&mut wc, Event::Resized(physical_size.into()));
                 }
-                WinEv::CloseRequested => *control_flow = ControlFlow::Exit,
+                WinEv::CloseRequested => event_handler(&mut wc, Event::CloseRequested),
                 _ => (),
             },
             Ev::RedrawRequested(_) => {
-                event_handler(Event::RedrawRequested);
+                event_handler(&mut wc, Event::RedrawRequested);
 
                 windowed_context.swap_buffers().unwrap();
             }
             _ => (),
+        }
+
+        if wc.exit {
+            *control_flow = ControlFlow::Exit;
         }
     });
 }
